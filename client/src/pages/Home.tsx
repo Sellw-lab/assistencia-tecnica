@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { jsPDF } from "jspdf";
 import {
   Activity,
   AlertCircle,
@@ -57,10 +58,13 @@ type DeviceData = {
 };
 
 type ProblemData = {
+  serviceType: string;
   description: string;
   started: string;
   event: string;
   quickTest: string;
+  repairNotes: string;
+  resolution: string;
 };
 
 type SafetyData = {
@@ -74,6 +78,9 @@ type ClosingData = {
   deadline: string;
   approval: string;
   storage: string;
+  finalValue: string;
+  pickupTerms: string;
+  warranty: string;
 };
 
 type IntakeData = {
@@ -89,9 +96,9 @@ type BlockId = keyof IntakeData;
 const emptyData: IntakeData = {
   client: { name: "", document: "", phone: "", email: "", address: "", contactChannel: "" },
   device: { type: "", model: "", serial: "", accessories: "" },
-  problem: { description: "", started: "", event: "", quickTest: "" },
+  problem: { serviceType: "", description: "", started: "", event: "", quickTest: "", repairNotes: "", resolution: "" },
   safety: { backup: "", access: "", responsibility: false },
-  closing: { fee: "", deadline: "", approval: "", storage: "" },
+  closing: { fee: "", deadline: "", approval: "", storage: "", finalValue: "", pickupTerms: "", warranty: "" },
 };
 
 const blockMeta: Array<{ id: BlockId; number: string; title: string; description: string; icon: typeof UserRound; accent: string; label: string }> = [
@@ -105,10 +112,132 @@ const blockMeta: Array<{ id: BlockId; number: string; title: string; description
 const requiredByBlock: Record<BlockId, string[]> = {
   client: ["name", "document", "phone", "address", "contactChannel"],
   device: ["type", "model", "serial", "accessories"],
-  problem: ["description", "started", "event", "quickTest"],
+  problem: ["serviceType", "description", "started", "event", "quickTest", "repairNotes", "resolution"],
   safety: ["backup", "access", "responsibility"],
-  closing: ["fee", "deadline", "approval", "storage"],
+  closing: ["fee", "deadline", "approval", "storage", "finalValue", "pickupTerms", "warranty"],
 };
+
+async function generateReportPdf(data: IntakeData) {
+  const pdf = new jsPDF({ unit: "mm", format: "a4" });
+  const margin = 18;
+  const pageWidth = 210;
+  const contentWidth = pageWidth - margin * 2;
+  let y = 20;
+  let logoData: string | undefined;
+  try {
+    const response = await fetch("/brand-mark.png");
+    const blob = await response.blob();
+    logoData = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(String(reader.result));
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    // O relatório continua disponível mesmo que o logo não carregue.
+  }
+  const addWatermark = () => {
+    if (!logoData) return;
+    try {
+      pdf.setGState({ opacity: 0.07 });
+      pdf.addImage(logoData, "PNG", 66, 105, 78, 78);
+      pdf.setGState({ opacity: 1 });
+    } catch {
+      // A marca é decorativa; não impede a emissão do documento.
+    }
+  };
+  const ensureSpace = (height: number) => {
+    if (y + height > 278) {
+      pdf.addPage();
+      y = 20;
+      addWatermark();
+    }
+  };
+  const text = (value: string | undefined, fallback = "Não informado") => value?.trim() || fallback;
+  const addWrapped = (label: string, value: string | undefined, options: { required?: boolean } = {}) => {
+    const content = text(value, options.required ? "Não informado" : "Não se aplica");
+    const lines = pdf.splitTextToSize(content, contentWidth - 42);
+    ensureSpace(8 + lines.length * 5);
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(9);
+    pdf.setTextColor(70, 84, 78);
+    pdf.text(label, margin, y);
+    pdf.setFont("helvetica", "normal");
+    pdf.setTextColor(88, 101, 95);
+    pdf.text(lines, margin + 42, y);
+    y += Math.max(7, lines.length * 5);
+  };
+  const section = (title: string) => {
+    ensureSpace(14);
+    y += 3;
+    pdf.setFillColor(237, 115, 85);
+    pdf.roundedRect(margin, y - 5, contentWidth, 8, 2, 2, "F");
+    pdf.setTextColor(16, 24, 32);
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(10);
+    pdf.text(title.toUpperCase(), margin + 4, y + 0.5);
+    y += 10;
+  };
+  addWatermark();
+  if (logoData) pdf.addImage(logoData, "PNG", margin, y - 5, 16, 16);
+  pdf.setTextColor(16, 24, 32);
+  pdf.setFont("helvetica", "bold");
+  pdf.setFontSize(18);
+  pdf.text("SertByte Assistência Técnica", margin + 21, y + 2);
+  pdf.setFont("helvetica", "normal");
+  pdf.setFontSize(9);
+  pdf.setTextColor(105, 116, 110);
+  pdf.text("Relatório de atendimento / ordem de serviço", margin + 21, y + 8);
+  pdf.text(`Emitido em ${new Date().toLocaleDateString("pt-BR")}`, pageWidth - margin, y + 8, { align: "right" });
+  y += 25;
+
+  section("Cliente");
+  addWrapped("Nome", data.client.name, { required: true });
+  addWrapped("CPF/RG", data.client.document, { required: true });
+  addWrapped("Telefone", data.client.phone, { required: true });
+  addWrapped("E-mail", data.client.email);
+  addWrapped("Endereço", data.client.address, { required: true });
+  addWrapped("Retorno", data.client.contactChannel, { required: true });
+
+  section("Equipamento");
+  addWrapped("Tipo", data.device.type, { required: true });
+  addWrapped("Marca/modelo", data.device.model, { required: true });
+  addWrapped("N.º série", data.device.serial, { required: true });
+  addWrapped("Acessórios", data.device.accessories, { required: true });
+
+  section("Diagnóstico e serviço");
+  addWrapped("Atendimento", data.problem.serviceType, { required: true });
+  addWrapped("Problema", data.problem.description, { required: true });
+  addWrapped("Início", data.problem.started, { required: true });
+  addWrapped("Ocorrência", data.problem.event, { required: true });
+  addWrapped("Teste inicial", data.problem.quickTest, { required: true });
+  addWrapped("Observações", data.problem.repairNotes, { required: true });
+  addWrapped("Solução/resultado", data.problem.resolution, { required: true });
+
+  section("Dados, autorização e condições");
+  addWrapped("Backup", data.safety.backup, { required: true });
+  addWrapped("Acesso/formatação", data.safety.access, { required: true });
+  addWrapped("Responsabilidade", data.safety.responsibility ? "Cliente avisado sobre backup" : "Não confirmado", { required: true });
+  addWrapped("Taxa diagnóstico", data.closing.fee, { required: true });
+  addWrapped("Prazo estimado", data.closing.deadline, { required: true });
+  addWrapped("Aprovação", data.closing.approval, { required: true });
+  addWrapped("Armazenamento", data.closing.storage, { required: true });
+  addWrapped("Valor final", data.closing.finalValue, { required: true });
+  addWrapped("Retirada/espera", data.closing.pickupTerms, { required: true });
+  addWrapped("Garantia", data.closing.warranty, { required: true });
+
+  ensureSpace(25);
+  y += 5;
+  pdf.setDrawColor(220, 226, 222);
+  pdf.line(margin, y, pageWidth - margin, y);
+  y += 8;
+  pdf.setFont("helvetica", "italic");
+  pdf.setFontSize(8);
+  pdf.setTextColor(120, 130, 124);
+  pdf.text("Documento informativo da assistência técnica. Guarde este relatório para a retirada do equipamento.", margin, y);
+  pdf.text("SertByte · Serra Talhada, PE · (87) 3831-2048 · oi@sertbyte.demo", margin, y + 5);
+  pdf.save(`relatorio-sertbyte-${data.client.name.trim().replace(/\s+/g, "-").toLowerCase() || "atendimento"}.pdf`);
+}
 
 function isBlockComplete(data: IntakeData, blockId: BlockId) {
   return requiredByBlock[blockId].every(field => {
@@ -195,7 +324,7 @@ export default function Home() {
 
               <div className="tracking-card panel-card"><div className="card-heading"><div><span className="panel-label">Acompanhamento</span><h3>Onde está a OS</h3></div><Eye size={17} className="muted-icon" /></div><div className="tracking-list">{blockMeta.map((block, index) => { const done = isBlockComplete(data, block.id); const current = block.id === activeBlock.id && !done; return <div className={`tracking-step ${done ? "done" : ""} ${current ? "current" : ""}`} key={block.id}><span className="tracking-step-dot">{done ? <Check size={11} /> : index + 1}</span><span>{block.title}</span>{current && <em>agora</em>}</div>; })}</div><div className="customer-return"><Send size={14} /><span>Retorno: <strong>{allComplete ? "“A sua OS está pronta para o relatório final.”" : `“A sua OS está em ${activeBlock.title.toLowerCase()}.”`}</strong></span></div></div>
 
-              <div className={`report-card panel-card ${allComplete ? "report-ready" : ""}`}><div className="report-card-head"><div className="report-icon"><ReceiptText size={19} /></div><div><span className="panel-label">Entrega ao cliente</span><h3>Relatório final</h3></div></div>{showReport ? <div className="report-preview"><strong>Relatório da nova OS</strong><span>{data.client.name} · {data.device.model}</span><span>Blocos concluídos: {completedCount}/{blockMeta.length}</span><span>Estado: pronto para entrega</span><button className="report-send"><Send size={14} /> Enviar relatório fictício</button></div> : <><p>{allComplete ? "Todos os blocos foram conferidos. Gere um resumo final para entregar ao cliente." : "O relatório aparece depois de concluir todos os blocos essenciais."}</p><button className="report-button" disabled={!allComplete} onClick={() => setShowReport(true)}><FileText size={15} /> {allComplete ? "Gerar relatório final" : "Relatório bloqueado"}</button></>}</div>
+              <div className={`report-card panel-card ${allComplete ? "report-ready" : ""}`}><div className="report-card-head"><div className="report-icon"><ReceiptText size={19} /></div><div><span className="panel-label">Entrega ao cliente</span><h3>Relatório final</h3></div></div>{showReport ? <div className="report-preview"><strong>Relatório da nova OS</strong><span>{data.client.name} · {data.device.model}</span><span>Blocos concluídos: {completedCount}/{blockMeta.length}</span><span>Estado: pronto para entrega</span><button className="report-send" onClick={() => void generateReportPdf(data)}><Send size={14} /> Enviar relatório em PDF</button></div> : <><p>{allComplete ? "Todos os blocos foram conferidos. Gere um resumo final para entregar ao cliente." : "O relatório aparece depois de concluir todos os blocos essenciais."}</p><button className="report-button" disabled={!allComplete} onClick={() => setShowReport(true)}><FileText size={15} /> {allComplete ? "Gerar relatório final" : "Relatório bloqueado"}</button></>}</div>
 
               <div className="contact-card panel-card"><div className="contact-card-top"><div className="mini-brand-mark">SB</div><div><span>Precisa de apoio?</span><strong>Fale com a bancada</strong></div></div><div className="contact-actions"><button><Phone size={15} /> (87) 3831-2048</button><button><Mail size={15} /> oi@sertbyte.demo</button></div></div></aside>
           </section>
@@ -227,7 +356,18 @@ function DeviceFields({ data, update }: { data: DeviceData; update: (field: keyo
 }
 
 function ProblemFields({ data, update }: { data: ProblemData; update: (field: keyof ProblemData, value: string) => void }) {
-  return <div className="fields-grid"><TextAreaField label="Defeito relatado pelo cliente" value={data.description} placeholder="Escreva o problema com as palavras do cliente..." onChange={value => update("description", value)} /><Field label="Quando começou?" value={data.started} placeholder="Ex.: há 2 semanas" onChange={value => update("started", value)} /><SelectField label="O que aconteceu antes?" value={data.event} placeholder="Selecione uma opção" options={["Nada relatado", "Queda ou impacto", "Contacto com líquido", "Oscilação de energia", "Outro"]} onChange={value => update("event", value)} /><SelectField label="Teste rápido na receção" value={data.quickTest} placeholder="Registe o resultado" options={["Ligou normalmente", "Ligou com falha", "Não ligou", "Não se aplica"]} onChange={value => update("quickTest", value)} /></div>;
+  function selectService(value: string) {
+    update("serviceType", value);
+    if (value !== "Reparo técnico") {
+      if (!data.description) update("description", value === "Limpeza preventiva" ? "Sem problema relatado; solicitada limpeza preventiva." : "Sem problema relatado; solicitado atendimento de limpeza/cuidados.");
+      if (!data.started) update("started", "Não se aplica");
+      if (!data.event) update("event", "Nada relatado");
+      if (!data.quickTest) update("quickTest", "Ligou normalmente");
+      if (!data.repairNotes) update("repairNotes", "Limpeza e cuidados realizados conforme necessidade do equipamento.");
+      if (!data.resolution) update("resolution", "Equipamento sem falha identificada; serviço de limpeza/cuidados concluído.");
+    }
+  }
+  return <div className="fields-grid"><SelectField label="Tipo de atendimento" value={data.serviceType} placeholder="Escolha o serviço" options={["Reparo técnico", "Limpeza preventiva", "Limpeza e higienização", "Outros cuidados necessários"]} onChange={selectService} /><TextAreaField label="Problema relatado pelo cliente" value={data.description} placeholder="Escreva o problema ou indique que não há falha..." onChange={value => update("description", value)} /><Field label="Quando começou?" value={data.started} placeholder="Ex.: há 2 semanas / não se aplica" onChange={value => update("started", value)} /><SelectField label="O que aconteceu antes?" value={data.event} placeholder="Selecione uma opção" options={["Nada relatado", "Queda ou impacto", "Contacto com líquido", "Oscilação de energia", "Outro"]} onChange={value => update("event", value)} /><SelectField label="Teste rápido na receção" value={data.quickTest} placeholder="Registe o resultado" options={["Ligou normalmente", "Ligou com falha", "Não ligou", "Não se aplica"]} onChange={value => update("quickTest", value)} /><TextAreaField label="Observações durante o atendimento" value={data.repairNotes} placeholder="Limpeza feita, peças verificadas, cuidados necessários..." onChange={value => update("repairNotes", value)} /><TextAreaField label="Problema resolvido / resultado" value={data.resolution} placeholder="Descreva o que foi resolvido e como o equipamento ficou..." onChange={value => update("resolution", value)} /></div>;
 }
 
 function SafetyFields({ data, update }: { data: SafetyData; update: (field: keyof SafetyData, value: string | boolean) => void }) {
@@ -235,5 +375,5 @@ function SafetyFields({ data, update }: { data: SafetyData; update: (field: keyo
 }
 
 function ClosingFields({ data, update }: { data: ClosingData; update: (field: keyof ClosingData, value: string) => void }) {
-  return <div className="fields-grid"><SelectField label="Taxa de diagnóstico explicada" value={data.fee} placeholder="Confirme com o cliente" options={["Sem taxa", "Taxa explicada e aceite", "Taxa explicada, aguarda decisão"]} onChange={value => update("fee", value)} /><Field label="Prazo estimado" value={data.deadline} placeholder="Ex.: até 3 dias úteis" onChange={value => update("deadline", value)} /><SelectField label="Canal para aprovar orçamento" value={data.approval} placeholder="Canal combinado" options={["WhatsApp", "Telefone", "E-mail", "Cliente aprova presencialmente"]} onChange={value => update("approval", value)} /><SelectField label="Retirada e armazenamento" value={data.storage} placeholder="Condições explicadas" options={["Prazo de retirada explicado", "Cobrança de armazenamento explicada", "Ambos explicados"]} onChange={value => update("storage", value)} /><div className="field-help full-field"><FileSignature size={14} /> Ao fechar este bloco, a OS fica pronta para o relatório final.</div></div>;
+  return <div className="fields-grid"><SelectField label="Taxa de diagnóstico explicada" value={data.fee} placeholder="Confirme com o cliente" options={["Sem taxa", "Taxa explicada e aceite", "Taxa explicada, aguarda decisão"]} onChange={value => update("fee", value)} /><Field label="Prazo estimado" value={data.deadline} placeholder="Ex.: até 3 dias úteis" onChange={value => update("deadline", value)} /><SelectField label="Canal para aprovar orçamento" value={data.approval} placeholder="Canal combinado" options={["WhatsApp", "Telefone", "E-mail", "Cliente aprova presencialmente"]} onChange={value => update("approval", value)} /><SelectField label="Retirada e armazenamento" value={data.storage} placeholder="Condições explicadas" options={["Prazo de retirada explicado", "Cobrança de armazenamento explicada", "Ambos explicados"]} onChange={value => update("storage", value)} /><Field label="Valor final do atendimento" value={data.finalValue} placeholder="Ex.: R$ 80,00" onChange={value => update("finalValue", value)} /><TextAreaField label="Termos de retirada e tempo de espera" value={data.pickupTerms} placeholder="Prazo para retirar, tolerância e condições de espera..." onChange={value => update("pickupTerms", value)} /><TextAreaField label="Garantia do serviço" value={data.warranty} placeholder="Ex.: 90 dias para o serviço realizado, conforme condições informadas..." onChange={value => update("warranty", value)} /><div className="field-help full-field"><FileSignature size={14} /> Ao fechar este bloco, a OS fica pronta para o relatório final em PDF.</div></div>;
 }
